@@ -1,4 +1,6 @@
-streamlit
+easyocr
+numpy
+pandas
 requests
-google-generativeai
+streamlit
 Pillow
