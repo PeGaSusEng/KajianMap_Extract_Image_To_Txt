@@ -45,7 +45,47 @@ LETTERS_RE = re.compile(r"[^a-z]")
 WS_RE = re.compile(r"\s+")
 ALNUM_RE = re.compile(r"[A-Za-z0-9]")
 STAR_RE = re.compile(r"\*+")
-CEL_RE = re.compile(r"[\s,]+")
+
+
+# ============================================================================
+#  PEMBERSIH NOISE OCR
+# ============================================================================
+# Karakter sampah yang sering muncul dari artefak OCR (kurung, ornamen, arab salah baca)
+NOISE_EDGE_RE = re.compile(r"^[\{\[\(\|\\/<>~`^_=+*#%&;:\.\-]+|[\{\[\(\|\\/<>~`^_=+*#%&;:\.\-]+$")
+# Token sampah pendek di awal yang berakhiran I/1/l/| (mis. "{2u2I", "l2u2l")
+NOISE_TOKEN_RE = re.compile(r"^[\{\[\(]?\s*[A-Za-z0-9]{1,5}[I1l|]\s+")
+# Hapus karakter kontrol & zero-width
+CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\u200b-\u200f\u202a-\u202e]")
+# Hanya boleh ada 1 spasi
+MULTI_WS_RE = re.compile(r"[ \t]+")
+
+
+def bersihkan_teks(s):
+    """Buang karakter sampah hasil OCR di awal/akhir dan spasi berlebih.
+    Menangani kasus seperti '{2u2I KITAB AL-USHUL AS-SITTAH' -> 'KITAB AL-USHUL AS-SITTAH'.
+    """
+    if not s:
+        return ""
+    s = CTRL_RE.sub("", s)
+    s = STAR_RE.sub("", s)
+    s = MULTI_WS_RE.sub(" ", s).strip()
+    # buang noise di ujung (berulang sampai bersih)
+    for _ in range(3):
+        new = NOISE_EDGE_RE.sub("", s).strip()
+        if new == s:
+            break
+        s = new
+    # buang token sampah di awal, mis. "{2u2I "
+    for _ in range(2):
+        new = NOISE_TOKEN_RE.sub("", s)
+        if new == s:
+            break
+        s = new
+    return s.strip(" ,-|:")
+
+
+def clean_cell(s):
+    return bersihkan_teks(s)
 
 
 # ============================================================================
@@ -132,12 +172,6 @@ def fmt_date(d):
     return f"{d.day} {BULAN_TITLE[d.month - 1]} {d.year}"
 
 
-def clean_cell(s):
-    s = STAR_RE.sub("", s)
-    s = WS_RE.sub(" ", s)
-    return s.strip(" ,-|:")
-
-
 def to_boxes(results):
     """Ubah hasil EasyOCR (bbox, teks, conf) jadi dict yang mudah diolah."""
     boxes = []
@@ -199,26 +233,6 @@ def split_cells(cells):
     left = " ".join(c["text"] for c in cells[: i + 1])
     right = " ".join(c["text"] for c in cells[i + 1:])
     return left, right
-
-
-def assign_days(row_ys, anchors, clusters):
-    """Tentukan index hari untuk tiap baris sesi."""
-    n = len(row_ys)
-    if not clusters:
-        return [None] * n
-    k = len(anchors)
-    gaps = [row_ys[i + 1] - row_ys[i] for i in range(n - 1)]
-    if k >= 2 and n >= k:
-        order = sorted(range(len(gaps)), key=lambda i: gaps[i], reverse=True)
-        top, rest = order[: k - 1], order[k - 1:]
-        if not rest or min(gaps[i] for i in top) > 1.15 * max(gaps[i] for i in rest):
-            cuts, g, result = set(top), 0, []
-            for i in range(n):
-                result.append(anchors[g][1])
-                if i in cuts:
-                    g += 1
-            return result
-    return [min(clusters, key=lambda c: abs(c[0] - y))[1] for y in row_ys]
 
 
 def find_masjid(boxes, img_h):
@@ -416,7 +430,7 @@ def cap_words(s):
 def poster_lines(boxes):
     out = []
     for cells in group_lines(boxes):
-        txt = " ".join(c["text"] for c in cells).strip()
+        txt = bersihkan_teks(" ".join(c["text"] for c in cells))
         if txt:
             out.append({
                 "text": txt,
@@ -587,6 +601,9 @@ def parse_poster(results, img_h):
     else:
         judul = materi
 
+    # --- Pembersihan akhir judul (buang noise sisa seperti "{2u2I") ---
+    judul = bersihkan_teks(judul)
+
     # --- Tanggal, hari, jam ---
     cari = [l["text"] for l in free] + fields["tempat"]
     tgl, tgl_line = None, ""
@@ -690,7 +707,6 @@ def parse_semua(results, img_h):
     poster = parse_poster(results, img_h)
     poster_kuat = poster["rows"] and poster["label_kuat"] >= 2
 
-    # Kalau poster sudah kuat dan lengkap, jangan jalankan parse_flyer sama sekali
     if poster_kuat:
         if all(poster.get(k) for k in ("nama_masjid", "alamat_jalan", "kontak", "periode")):
             return poster
@@ -758,7 +774,7 @@ def baca_ocr(reader, image):
     return hasil
 
 
-KOLOM = ["hari_waktu", "nama_ustadz", "judul_kajian"]
+KOLOM = ["hari_waktu", "nama_ustadz", "judul_kajian", "sumber"]
 
 st.set_page_config(page_title="Ekstraktor Jadwal Kajian", layout="centered")
 st.title("🕌 Auto-Input Jadwal Kajian ke Google Sheets")
@@ -766,18 +782,79 @@ st.caption("Membaca flyer jadwal (tabel mingguan maupun poster tunggal) dan memb
 
 reader = load_ocr()
 
-uploaded_file = st.file_uploader("Upload Flyer Kajian (JPG/PNG)", type=["jpg", "jpeg", "png"])
+uploaded_files = st.file_uploader(
+    "Upload Flyer Kajian (bisa lebih dari satu)",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True,
+)
 
-if uploaded_file is not None:
-    image = ImageOps.exif_transpose(Image.open(uploaded_file)).convert("RGB")
-    st.image(buat_thumbnail(image), caption="Flyer Kajian", width=350)
+if uploaded_files:
+    # simpan byte supaya bisa dibaca berulang
+    for f in uploaded_files:
+        f.seek(0)
 
-    if st.button("🔍 Ekstrak Teks dari Gambar", type="primary"):
-        with st.spinner("Membaca teks flyer..."):
-            ocr_img = siapkan_gambar(image)
-            results = baca_ocr(reader, ocr_img)
-            st.session_state["parsed"] = parse_semua(results, ocr_img.height)
-            st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
+    # tampilkan thumbnail grid
+    cols = st.columns(min(len(uploaded_files), 4))
+    for i, f in enumerate(uploaded_files):
+        f.seek(0)
+        img = ImageOps.exif_transpose(Image.open(f)).convert("RGB")
+        with cols[i % len(cols)]:
+            st.image(buat_thumbnail(img), caption=f.name, use_container_width=True)
+
+    if st.button("🔍 Ekstrak Teks dari Semua Gambar", type="primary"):
+        semua_rows = []
+        masjid_gabungan = ""
+        alamat_gabungan = ""
+        kontak_gabungan = ""
+        periode_gabungan = ""
+        teks_gabungan = []
+
+        progress = st.progress(0.0, text="Memproses...")
+        with st.spinner(f"Membaca {len(uploaded_files)} flyer..."):
+            for idx, f in enumerate(uploaded_files):
+                f.seek(0)
+                img = ImageOps.exif_transpose(Image.open(f)).convert("RGB")
+                ocr_img = siapkan_gambar(img)
+                results = baca_ocr(reader, ocr_img)
+                parsed = parse_semua(results, ocr_img.height)
+
+                if not masjid_gabungan and parsed.get("nama_masjid"):
+                    masjid_gabungan = parsed["nama_masjid"]
+                if not alamat_gabungan and parsed.get("alamat_jalan"):
+                    alamat_gabungan = parsed["alamat_jalan"]
+                if not kontak_gabungan and parsed.get("kontak"):
+                    kontak_gabungan = parsed["kontak"]
+                if not periode_gabungan and parsed.get("periode"):
+                    periode_gabungan = parsed["periode"]
+
+                for r in parsed.get("rows", []):
+                    r["sumber"] = f.name
+                    semua_rows.append(r)
+
+                teks_gabungan.append(f"=== {f.name} ===\n{parsed.get('teks_lengkap','')}")
+                progress.progress((idx + 1) / len(uploaded_files),
+                                  text=f"Selesai {idx + 1}/{len(uploaded_files)}: {f.name}")
+
+        # buang duplikat persis
+        seen, rows_unik = set(), []
+        for r in semua_rows:
+            key = (r.get("hari_waktu", ""), r.get("nama_ustadz", ""), r.get("judul_kajian", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows_unik.append(r)
+
+        st.session_state["parsed"] = {
+            "rows":         rows_unik,
+            "nama_masjid":  masjid_gabungan,
+            "alamat_jalan": alamat_gabungan,
+            "kontak":       kontak_gabungan,
+            "periode":      periode_gabungan,
+            "teks_lengkap": "\n\n".join(teks_gabungan),
+            "raw":          [],
+        }
+        st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
+        progress.empty()
 
 # --- FORM EDIT & PRATINJAU SEBELUM DIKIRIM ---
 if "parsed" in st.session_state:
@@ -816,6 +893,7 @@ if "parsed" in st.session_state:
                 "hari_waktu":   st.column_config.TextColumn("Hari & Waktu", width="medium"),
                 "nama_ustadz":  st.column_config.TextColumn("Nama Ustadz", width="medium"),
                 "judul_kajian": st.column_config.TextColumn("Judul Kajian", width="large"),
+                "sumber":       st.column_config.TextColumn("Sumber", width="small"),
             },
             key=f"editor_{rid}",
         )
@@ -827,7 +905,7 @@ if "parsed" in st.session_state:
             {k: ("" if pd.isna(v) else str(v).strip()) for k, v in r.items()}
             for r in edited.to_dict(orient="records")
         ]
-        rows_out = [r for r in rows_out if any(r.values())]
+        rows_out = [r for r in rows_out if any(v for k, v in r.items() if k != "sumber")]
 
         if not rows_out:
             st.warning("Tidak ada baris untuk dikirim.")
@@ -860,8 +938,9 @@ if "parsed" in st.session_state:
 
     with st.expander("🔎 Lihat teks mentah hasil OCR"):
         st.text_area("Teks Lengkap", p.get("teks_lengkap", ""), height=160, label_visibility="collapsed")
-        st.dataframe(
-            pd.DataFrame(p.get("raw", [])),
-            use_container_width=True,
-            hide_index=True,
-        )
+        if p.get("raw"):
+            st.dataframe(
+                pd.DataFrame(p["raw"]),
+                use_container_width=True,
+                hide_index=True,
+            )
