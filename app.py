@@ -14,7 +14,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 # --- MASUKKAN LINK WEB APP GOOGLE SCRIPT ANDA DI SINI ---
-WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzpkoQIdq8dPAENFcZ_1kV3iW4_Lvy1f1ww5HKTkpI8J5zfxhHgnvWCBba4x_gYbfrK6Q/exec"
+WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzUxW-BPHOFlLRu7TfCdn2_PKj_F4GGLknNyckZFnw_ogyvvNDCspBFwNlfLd7d1rBQCA/exec"
 
 HARI_ID = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Ahad"]
 HARI_ALIAS = {
