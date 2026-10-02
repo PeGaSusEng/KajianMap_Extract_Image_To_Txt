@@ -2,7 +2,9 @@ import difflib
 import gc
 import hashlib
 import re
+from collections import OrderedDict
 from datetime import date, timedelta
+from statistics import median
 
 import easyocr
 import numpy as np
@@ -19,6 +21,7 @@ HARI_ALIAS = {
     "senin": 0, "selasa": 1, "rabu": 2, "kamis": 3,
     "jumat": 4, "sabtu": 5, "ahad": 6, "minggu": 6,
 }
+HARI_KEYS = list(HARI_ALIAS.keys())
 BULAN_ID = [
     "januari", "februari", "maret", "april", "mei", "juni",
     "juli", "agustus", "september", "oktober", "november", "desember",
@@ -38,13 +41,18 @@ ALAMAT_RE = re.compile(r"\b(?:Jl\.?|Jln\.?|Jalan|Gg\.?|Gang)\s+[A-Za-z0-9].*", r
 PHONE_RE = re.compile(
     r"(?<!\d)(?:\+62|62|0)\s?8\d{1,3}[\s-]?\d{3,4}[\s-]?\d{3,4}(?!\d)"
 )
+LETTERS_RE = re.compile(r"[^a-z]")
+WS_RE = re.compile(r"\s+")
+ALNUM_RE = re.compile(r"[A-Za-z0-9]")
+STAR_RE = re.compile(r"\*+")
+CEL_RE = re.compile(r"[\s,]+")
 
 
 # ============================================================================
 #  BAGIAN PARSER (murni Python, tidak butuh Streamlit)
 # ============================================================================
 def letters_only(s):
-    return re.sub(r"[^a-z]", "", s.lower())
+    return LETTERS_RE.sub("", s.lower())
 
 
 def match_hari(text):
@@ -52,7 +60,7 @@ def match_hari(text):
     t = letters_only(text)
     if len(t) < 3:
         return None
-    hit = difflib.get_close_matches(t, list(HARI_ALIAS.keys()), n=1, cutoff=0.75)
+    hit = difflib.get_close_matches(t, HARI_KEYS, n=1, cutoff=0.75)
     return HARI_ALIAS[hit[0]] if hit else None
 
 
@@ -125,8 +133,8 @@ def fmt_date(d):
 
 
 def clean_cell(s):
-    s = re.sub(r"\*+", "", s)
-    s = re.sub(r"\s+", " ", s)
+    s = STAR_RE.sub("", s)
+    s = WS_RE.sub(" ", s)
     return s.strip(" ,-|:")
 
 
@@ -136,7 +144,7 @@ def to_boxes(results):
     for item in results:
         bbox, text = item[0], item[1]
         text = text.strip()
-        if not re.search(r"[A-Za-z0-9]", text):  # buang simbol saja, mis. '**'
+        if not ALNUM_RE.search(text):  # buang simbol saja, mis. '**'
             continue
         xs = [float(p[0]) for p in bbox]
         ys = [float(p[1]) for p in bbox]
@@ -185,7 +193,7 @@ def split_cells(cells):
         return cells[0]["text"], ""
     gaps = [(cells[i + 1]["x1"] - cells[i]["x2"], i) for i in range(len(cells) - 1)]
     gap, i = max(gaps)
-    h = float(np.median([c["h"] for c in cells]))
+    h = float(median([c["h"] for c in cells]))
     if gap < 0.6 * h:  # tidak ada pemisah kolom yang jelas
         return " ".join(c["text"] for c in cells), ""
     left = " ".join(c["text"] for c in cells[: i + 1])
@@ -219,7 +227,7 @@ def find_masjid(boxes, img_h):
         cands = [b for b in boxes if MASJID_RE.match(b["text"])]
     if not cands:
         return ""
-    best = max(cands, key=lambda b: b["h"])  # judul besar di header, bukan footer/logo
+    best = max(cands, key=lambda b: b["h"])
     name = clean_cell(best["text"])
     return name.title() if name.isupper() else name
 
@@ -258,7 +266,7 @@ def parse_flyer(results, img_h):
     time_boxes.sort(key=lambda t: t[0]["yc"])
     time_ids = {id(b) for b, _ in time_boxes}
     time_left = min(b["x1"] for b, _ in time_boxes)
-    med_h = float(np.median([b["h"] for b, _ in time_boxes]))
+    med_h = float(median([b["h"] for b, _ in time_boxes]))
     y_min = time_boxes[0][0]["yc"] - 3 * med_h
     y_max = time_boxes[-1][0]["yc"] + 3 * med_h
 
@@ -277,7 +285,7 @@ def parse_flyer(results, img_h):
     labels.sort(key=lambda t: t[0]["yc"])
     anchors = [(b["yc"], idx) for b, idx in labels if idx is not None]
 
-    clusters = [] 
+    clusters = []
     for i, (y, idx) in enumerate(anchors):
         lo = y - 0.6 * med_h if i else float("-inf")
         hi = anchors[i + 1][0] - 0.6 * med_h if i + 1 < len(anchors) else float("inf")
@@ -324,7 +332,7 @@ def parse_flyer(results, img_h):
 
 
 # ============================================================================
-#  [BARU] PARSER POSTER TUNGGAL
+#  PARSER POSTER TUNGGAL
 # ============================================================================
 LABEL_MAP = {
     "kitab": "kitab", "buku": "kitab",
@@ -336,6 +344,7 @@ LABEL_MAP = {
     "waktu": "waktu", "pukul": "waktu", "jam": "waktu",
     "hari": "waktu", "tanggal": "waktu",
 }
+LABEL_KEYS = list(LABEL_MAP.keys())
 MAX_BARIS = {"kitab": 3, "materi": 4, "pemateri": 3, "tempat": 2}
 
 STOP_RE = re.compile(
@@ -345,7 +354,6 @@ STOP_RE = re.compile(
     re.I,
 )
 DOA_RE = re.compile(r"\b(?:haf|rah)[a-z]*ull?[aeo]h[a-z'’]*", re.I)
-
 NUMDATE_RE = re.compile(
     r"(?<!\d)(\d{1,2})\s*[./,\-]\s*(\d{1,2})\s*[./,\-]\s*(20\d{2})(?!\d)"
 )
@@ -385,6 +393,14 @@ USTADZ_RE = re.compile(
 )
 QUOTE_RE = re.compile(r"[\"“”„]\s*(.{5,}?)\s*[\"“”„]")
 QUOTE_STRIP = "\"“”„'‘’` "
+LABEL_SPLIT_RE = re.compile(r"^\s*([A-Za-z' ]{3,16}?)\s*[:：;]\s*(.*)$", re.S)
+WORD_RE = re.compile(r"[A-Za-z]+")
+WORD4_RE = re.compile(r"[A-Za-z'’`]{4,}")
+PUKUL_RE = re.compile(r"\b(?:pukul|pkl|jam|waktu)\b", re.I)
+BUKAN_JUDUL_RE = re.compile(
+    r"(?i)\b(?:ustadz|ustaz|bersama|masjid|mesjid|jalan|jl\.?|grogol|depok|wib|wita|wit"
+    r"|ba['’`]?da|sebelum|sesudah|sholat|shalat|kajian|info)\b"
+)
 
 
 def fix_ocr_digits(s):
@@ -411,17 +427,17 @@ def poster_lines(boxes):
 
 
 def poster_label(text):
-    m = re.match(r"^\s*([A-Za-z' ]{3,16}?)\s*[:：;]\s*(.*)$", text, re.S)
+    m = LABEL_SPLIT_RE.match(text)
     if m:
-        words = re.findall(r"[A-Za-z]+", m.group(1))
+        words = WORD_RE.findall(m.group(1))
         if words:
-            hit = difflib.get_close_matches(words[0].lower(), list(LABEL_MAP), n=1, cutoff=0.8)
+            hit = difflib.get_close_matches(words[0].lower(), LABEL_KEYS, n=1, cutoff=0.8)
             if hit:
                 return LABEL_MAP[hit[0]], m.group(2).strip(), True
         return "?", m.group(2).strip(), False
     t = letters_only(text)
-    if 3 <= len(t) <= 12:  
-        hit = difflib.get_close_matches(t, list(LABEL_MAP), n=1, cutoff=0.85)
+    if 3 <= len(t) <= 12:
+        hit = difflib.get_close_matches(t, LABEL_KEYS, n=1, cutoff=0.85)
         if hit:
             return LABEL_MAP[hit[0]], "", False
     return None, text, False
@@ -445,7 +461,7 @@ def find_date(text):
 
 
 def find_hari_in(text):
-    for w in re.findall(r"[A-Za-z'’`]{4,}", text):
+    for w in WORD4_RE.findall(text):
         idx = match_hari(w)
         if idx is not None:
             return idx
@@ -516,7 +532,7 @@ def parse_poster(results, img_h):
             cur = None
             free.append({"text": t, "y": ln["y"], "h": ln["h"]})
 
-    # --- Pemateri: buang doa (Hafizhahullah), gabung bila lebih dari satu ustadz ---
+    # --- Pemateri ---
     ustadz = ""
     for s in fields["pemateri"]:
         s = clean_cell(DOA_RE.sub("", s))
@@ -529,7 +545,7 @@ def parse_poster(results, img_h):
                 ustadz = clean_cell(DOA_RE.sub("", l["text"]))
                 break
 
-    # --- Materi (tema) ---
+    # --- Materi ---
     materi = clean_cell(" ".join(fields["materi"]).strip(QUOTE_STRIP))
     if not materi:
         for l in free:
@@ -537,36 +553,27 @@ def parse_poster(results, img_h):
             if q:
                 materi = clean_cell(q.group(1))
                 break
-                
-    # ========================================================================
-    # [TAMBAHAN] Fallback: Jika tidak ada label materi/tema dan tidak ada kutipan,
-    # ambil teks dengan ukuran huruf (h) terbesar sebagai judul kajian.
-    # ========================================================================
+
+    # --- Fallback judul dari teks terbesar ---
     if not materi and free:
-        bukan_judul_re = re.compile(
-            r"(?i)\b(?:ustadz|ustaz|bersama|masjid|mesjid|jalan|jl\.?|grogol|depok|wib|wita|wit|ba['’`]?da|sebelum|sesudah|sholat|shalat|kajian|info)\b"
-        )
-        kandidat = []
-        for l in free:
-            t_lower = l["text"].lower()
-            # Hindari teks pendek, tanggal, atau yang mengandung kata kunci non-judul
-            if (len(t_lower) > 4 and 
-                not bukan_judul_re.search(t_lower) and 
-                not STOP_RE.search(l["text"]) and 
-                not ALAMAT_RE.search(l["text"]) and
-                not NUMDATE_RE.search(l["text"]) and
-                not TEXTDATE_RE.search(l["text"])):
-                kandidat.append(l)
-        
+        kandidat = [
+            l for l in free
+            if len(l["text"]) > 4
+            and not BUKAN_JUDUL_RE.search(l["text"])
+            and not STOP_RE.search(l["text"])
+            and not ALAMAT_RE.search(l["text"])
+            and not NUMDATE_RE.search(l["text"])
+            and not TEXTDATE_RE.search(l["text"])
+        ]
         if kandidat:
             h_max = max(k["h"] for k in kandidat)
-            # Ambil baris teks dengan tinggi huruf minimal 45% dari teks terbesar
-            judul_lines = [k for k in kandidat if k["h"] >= 0.45 * h_max]
-            judul_lines.sort(key=lambda x: x["y"]) # Pastikan terurut dari atas ke bawah
-            materi = clean_cell(" ".join([k["text"] for k in judul_lines]))
-    # ========================================================================
+            judul_lines = sorted(
+                (k for k in kandidat if k["h"] >= 0.45 * h_max),
+                key=lambda x: x["y"],
+            )
+            materi = clean_cell(" ".join(k["text"] for k in judul_lines))
 
-    # --- Kitab: baris pertama = judul kitab, baris berikut = pengarang ---
+    # --- Kitab ---
     kl = [clean_cell(DOA_RE.sub("", s).replace("_", " ")) for s in fields["kitab"]]
     kl = [s for s in kl if s]
     kitab = ""
@@ -601,7 +608,7 @@ def parse_poster(results, img_h):
                 break
 
     jam = None
-    prioritas = [t for t in cari if re.search(r"\b(?:pukul|pkl|jam|waktu)\b", t, re.I)]
+    prioritas = [t for t in cari if PUKUL_RE.search(t)]
     for txt in prioritas + cari:
         jam = find_time(txt)
         if jam:
@@ -617,7 +624,7 @@ def parse_poster(results, img_h):
     if waktu:
         bagian.append(waktu)
 
-    # --- Masjid: header (di atas) dulu, cadangan dari kalimat donasi di bawah ---
+    # --- Masjid ---
     nama_masjid = ""
     cands = [l for l in free + [{"text": s, "y": 0, "h": 0} for s in fields["tempat"]]
              if MASJID_ANY_RE.search(l["text"])]
@@ -670,7 +677,7 @@ def parse_poster(results, img_h):
 
 
 def _lengkapi(poster, tabel):
-    """Isi kolom kosong hasil poster dengan hasil parser tabel (masjid, alamat, kontak)."""
+    """Isi kolom kosong hasil poster dengan hasil parser tabel."""
     for k in ("nama_masjid", "alamat_jalan", "kontak", "periode"):
         if not poster.get(k) and tabel.get(k):
             poster[k] = tabel[k]
@@ -678,10 +685,15 @@ def _lengkapi(poster, tabel):
 
 
 def parse_semua(results, img_h):
-    """Pilih parser yang cocok. Tabel mingguan -> parse_flyer (tidak berubah);
+    """Pilih parser yang cocok. Tabel mingguan -> parse_flyer;
     poster satu sesi berlabel Kitab/Materi/Pemateri -> parse_poster."""
     poster = parse_poster(results, img_h)
-    if poster["rows"] and poster["label_kuat"] >= 2:
+    poster_kuat = poster["rows"] and poster["label_kuat"] >= 2
+
+    # Kalau poster sudah kuat dan lengkap, jangan jalankan parse_flyer sama sekali
+    if poster_kuat:
+        if all(poster.get(k) for k in ("nama_masjid", "alamat_jalan", "kontak", "periode")):
+            return poster
         try:
             return _lengkapi(poster, parse_flyer(results, img_h))
         except Exception:
@@ -705,36 +717,34 @@ def load_ocr():
 
 
 def siapkan_gambar(image, min_width=1400, max_width=2200):
-    """Samakan ukuran gambar supaya OCR stabil (teks kecil diperbesar, foto besar diperkecil)."""
-    if image.width < min_width or image.width > max_width:
-        target = min_width if image.width < min_width else max_width
-        r = target / image.width
-        image = image.resize((int(image.width * r), int(image.height * r)), Image.LANCZOS)
-    return image
+    """Samakan ukuran gambar supaya OCR stabil."""
+    if min_width <= image.width <= max_width:
+        return image
+    target = min_width if image.width < min_width else max_width
+    r = target / image.width
+    return image.resize((int(image.width * r), int(image.height * r)), Image.LANCZOS)
 
 
-# --- [BARU] Pembantu agar aplikasi ringan -----------------------------------
 def buat_thumbnail(image, sisi=700):
-    """Pratinjau kecil untuk browser (gambar asli tidak perlu dikirim ulang tiap rerun)."""
     t = image.copy()
     t.thumbnail((sisi, sisi))
     return t
 
 
 def _jumlah_huruf(hasil):
-    return sum(len(re.findall(r"[A-Za-z0-9]", r[1])) for r in hasil)
+    return sum(len(ALNUM_RE.findall(r[1])) for r in hasil)
 
 
 def baca_ocr(reader, image):
-    """OCR dengan cache hasil (gambar sama tidak di-OCR dua kali), batch kecil,
-    dan percobaan kedua (autocontrast) hanya jika hasil pertama terlalu sedikit."""
+    """OCR dengan cache hasil (gambar sama tidak di-OCR dua kali)."""
     kunci = hashlib.md5(image.tobytes()).hexdigest()
-    cache = st.session_state.setdefault("_ocr_cache", {})
+    cache = st.session_state.setdefault("_ocr_cache", OrderedDict())
     if kunci in cache:
+        cache.move_to_end(kunci)
         return cache[kunci]
 
     hasil = reader.readtext(np.array(image), detail=1, paragraph=False, batch_size=4)
-    if len(hasil) < 6:  # poster dengan latar ramai/teks kontras rendah
+    if len(hasil) < 6:
         gray = ImageOps.autocontrast(ImageOps.grayscale(image), cutoff=2)
         hasil2 = reader.readtext(np.array(gray), detail=1, paragraph=False, batch_size=4)
         if _jumlah_huruf(hasil2) > _jumlah_huruf(hasil):
@@ -743,8 +753,8 @@ def baca_ocr(reader, image):
     gc.collect()
 
     cache[kunci] = hasil
-    while len(cache) > 3:  # batasi memori
-        cache.pop(next(iter(cache)))
+    while len(cache) > 3:
+        cache.popitem(last=False)
     return hasil
 
 
@@ -760,16 +770,13 @@ uploaded_file = st.file_uploader("Upload Flyer Kajian (JPG/PNG)", type=["jpg", "
 
 if uploaded_file is not None:
     image = ImageOps.exif_transpose(Image.open(uploaded_file)).convert("RGB")
-    # [ASLI] st.image(image, caption="Flyer Kajian", width=350)
-    st.image(buat_thumbnail(image), caption="Flyer Kajian", width=350)  # [BARU] thumbnail ringan
+    st.image(buat_thumbnail(image), caption="Flyer Kajian", width=350)
 
     if st.button("🔍 Ekstrak Teks dari Gambar", type="primary"):
         with st.spinner("Membaca teks flyer..."):
             ocr_img = siapkan_gambar(image)
-            # [ASLI] results = reader.readtext(np.array(ocr_img), detail=1, paragraph=False)
-            # [ASLI] st.session_state["parsed"] = parse_flyer(results, ocr_img.height)
-            results = baca_ocr(reader, ocr_img)  # [BARU] OCR dengan cache
-            st.session_state["parsed"] = parse_semua(results, ocr_img.height)  # [BARU] tabel ATAU poster
+            results = baca_ocr(reader, ocr_img)
+            st.session_state["parsed"] = parse_semua(results, ocr_img.height)
             st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
 
 # --- FORM EDIT & PRATINJAU SEBELUM DIKIRIM ---
@@ -786,4 +793,75 @@ if "parsed" in st.session_state:
 
     with st.form(f"form_kajian_{rid}"):
         col1, col2 = st.columns(2)
-        nama_masjid = col1.text_input("Nama Masjid / Tempat", value=p["nama_masjid"], key=f"masjid_{rid}")
+        nama_masjid = col1.text_input(
+            "Nama Masjid / Tempat", value=p["nama_masjid"], key=f"masjid_{rid}"
+        )
+        alamat = col2.text_input(
+            "Alamat / Jalan", value=p["alamat_jalan"], key=f"alamat_{rid}"
+        )
+        kontak = col1.text_input(
+            "Kontak / No. HP", value=p["kontak"], key=f"kontak_{rid}"
+        )
+        periode = col2.text_input(
+            "Periode", value=p["periode"], key=f"periode_{rid}"
+        )
+
+        st.markdown("**Daftar Sesi Kajian**")
+        df_edit = pd.DataFrame(p["rows"], columns=KOLOM)
+        edited = st.data_editor(
+            df_edit,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "hari_waktu":   st.column_config.TextColumn("Hari & Waktu", width="medium"),
+                "nama_ustadz":  st.column_config.TextColumn("Nama Ustadz", width="medium"),
+                "judul_kajian": st.column_config.TextColumn("Judul Kajian", width="large"),
+            },
+            key=f"editor_{rid}",
+        )
+
+        submitted = st.form_submit_button("💾 Kirim ke Google Sheets", type="primary")
+
+    if submitted:
+        rows_out = [
+            {k: ("" if pd.isna(v) else str(v).strip()) for k, v in r.items()}
+            for r in edited.to_dict(orient="records")
+        ]
+        rows_out = [r for r in rows_out if any(r.values())]
+
+        if not rows_out:
+            st.warning("Tidak ada baris untuk dikirim.")
+        elif not WEB_APP_URL or "script.google.com" not in WEB_APP_URL:
+            st.error("WEB_APP_URL belum diisi dengan benar.")
+        else:
+            payload = {
+                "nama_masjid":  nama_masjid.strip(),
+                "alamat_jalan": alamat.strip(),
+                "kontak":       kontak.strip(),
+                "periode":      periode.strip(),
+                "rows":         rows_out,
+            }
+            with st.spinner("Mengirim ke Google Sheets..."):
+                try:
+                    r = requests.post(WEB_APP_URL, json=payload, timeout=30)
+                    if r.ok:
+                        st.success(f"✅ {len(rows_out)} sesi berhasil dikirim!")
+                        ctype = r.headers.get("content-type", "")
+                        if ctype.startswith("application/json"):
+                            st.json(r.json())
+                        else:
+                            st.code(r.text[:500])
+                    else:
+                        st.error(f"Gagal ({r.status_code}): {r.text[:300]}")
+                except requests.exceptions.Timeout:
+                    st.error("Timeout: server Google Sheets tidak merespons dalam 30 detik.")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Kesalahan jaringan: {e}")
+
+    with st.expander("🔎 Lihat teks mentah hasil OCR"):
+        st.text_area("Teks Lengkap", p.get("teks_lengkap", ""), height=160, label_visibility="collapsed")
+        st.dataframe(
+            pd.DataFrame(p.get("raw", [])),
+            use_container_width=True,
+            hide_index=True,
+        )
