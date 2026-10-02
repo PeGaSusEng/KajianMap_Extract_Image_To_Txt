@@ -8,7 +8,7 @@ from PIL import Image
 # KONFIGURASI
 # ================================================================
 # 1. Masukkan API Key Gemini Anda dari https://aistudio.google.com
-GEMINI_API_KEY = "AQ.Ab8RN6KNRE_uioa9y_OL7VkIlFnJTAbqwn_8yeJ-mHBgeWDx_Q"
+GEMINI_API_KEY = "AQ.Ab8RN6Jg2gRH1I_u69lo1YwA0fmixmO-TBYQS8I6tEISQUAD2A"
 
 # 2. Masukkan Web App URL dari Google Apps Script Anda
 WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzgXQiICBL8NPbpGslk0Vpqi5P5aMixzbDEKS0QCPYCal6vArwSygzRHyYlPA9fW5nf-Q/exec"
