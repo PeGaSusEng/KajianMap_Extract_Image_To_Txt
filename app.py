@@ -10,7 +10,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 # --- MASUKKAN LINK WEB APP GOOGLE SCRIPT ANDA DI SINI ---
-WEB_APP_URL = "MASUKKAN_URL_WEB_APP_GOOGLE_SCRIPT_ANDA"
+WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzgXQiICBL8NPbpGslk0Vpqi5P5aMixzbDEKS0QCPYCal6vArwSygzRHyYlPA9fW5nf-Q/exec"
 
 HARI_ID = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Ahad"]
 HARI_ALIAS = {
